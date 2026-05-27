@@ -1,0 +1,10 @@
+[package]
+name = "resource_sim"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+noise = "0.9"
+rand = "0.8"
