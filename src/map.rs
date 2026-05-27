@@ -18,7 +18,13 @@ pub struct Map {
 }
 
 impl Map {
-    pub fn generate(width: usize, height: usize, seed: u32) -> (Self, HashMap<Pos, Resource>) {
+    pub fn generate(
+        width: usize,
+        height: usize,
+        seed: u32,
+        energy_range: (u32, u32),
+        crystal_range: (u32, u32),
+    ) -> (Self, HashMap<Pos, Resource>) {
         let perlin = Perlin::new(seed);
         let mut tiles = vec![vec![Tile::Empty; width]; height];
 
@@ -54,12 +60,11 @@ impl Map {
             let x = rng.gen_range(0..width);
             let y = rng.gen_range(0..height);
             if tiles[y][x] == Tile::Empty && !resources.contains_key(&(x, y)) {
-                let kind = if rng.gen_bool(0.5) {
-                    ResourceKind::Energy
+                let (kind, quantity) = if rng.gen_bool(0.5) {
+                    (ResourceKind::Energy, rng.gen_range(energy_range.0..=energy_range.1))
                 } else {
-                    ResourceKind::Crystal
+                    (ResourceKind::Crystal, rng.gen_range(crystal_range.0..=crystal_range.1))
                 };
-                let quantity = rng.gen_range(50u32..=200);
                 resources.insert((x, y), Resource { kind, quantity });
             }
             attempts += 1;

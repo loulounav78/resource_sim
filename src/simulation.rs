@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::map::Map;
 use crate::types::{Pos, Resource, ResourceKind};
@@ -37,6 +37,7 @@ pub struct SimState {
     pub robots: Vec<RobotDisplay>,
     pub collected_energy: u32,
     pub collected_crystals: u32,
+    pub reserved: HashSet<Pos>,
 }
 
 impl SimState {
@@ -48,6 +49,7 @@ impl SimState {
             robots: Vec::new(),
             collected_energy: 0,
             collected_crystals: 0,
+            reserved: HashSet::new(),
         }
     }
 }
