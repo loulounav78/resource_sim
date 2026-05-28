@@ -110,10 +110,15 @@ enum Screen {
     Running {
         state: Arc<Mutex<SimState>>,
         handle: SimHandle,
+        start_time: Instant,
     },
     ConfirmDialog {
         option: usize, // 0 = nouvelle partie, 1 = retour à la partie
         prev_game: (Arc<Mutex<SimState>>, SimHandle),
+    },
+    VictoryDialog {
+        state: Arc<Mutex<SimState>>,
+        elapsed_secs: u64,
     },
 }
 
@@ -160,6 +165,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ui::draw_simulation(f, &s);
                     ui::draw_confirm_dialog(f, opt);
                 })?;
+            }
+            Screen::VictoryDialog { state, elapsed_secs } => {
+                let s = state.lock().unwrap();
+                let secs = *elapsed_secs;
+                terminal.draw(|f| {
+                    ui::draw_simulation(f, &s);
+                    ui::draw_victory_dialog(f, secs);
+                })?;
+            }
+        }
+
+        // ── Victory detection ─────────────────────────────────
+        if let Screen::Running { state, start_time, .. } = &screen {
+            if state.lock().unwrap().resources.is_empty() {
+                let elapsed_secs = start_time.elapsed().as_secs();
+                let old = std::mem::replace(&mut screen, Screen::Config { selected: 0, prev_game: None });
+                if let Screen::Running { state, handle, .. } = old {
+                    handle.stop();
+                    screen = Screen::VictoryDialog { state, elapsed_secs };
+                }
+                continue;
             }
         }
 
@@ -214,6 +240,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         _ => Action::None,
                     },
+                    Screen::VictoryDialog { .. } => match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
+                        KeyCode::Enter => Action::StartNew,
+                        _ => Action::None,
+                    },
                 };
 
                 match action {
@@ -226,13 +257,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let old = std::mem::replace(&mut screen, Screen::Config { selected: 0, prev_game: None });
                         stop_screen(old);
                         let (state, handle) = start_simulation(&cfg);
-                        screen = Screen::Running { state, handle };
+                        screen = Screen::Running { state, handle, start_time: Instant::now() };
                         cfg_snapshot = None;
                     }
                     Action::OpenConfig => {
                         cfg_snapshot = Some(cfg.clone());
                         let old = std::mem::replace(&mut screen, Screen::Config { selected: 0, prev_game: None });
-                        if let Screen::Running { state, handle } = old {
+                        if let Screen::Running { state, handle, .. } = old {
                             screen = Screen::Config { selected: 0, prev_game: Some((state, handle)) };
                         }
                     }
@@ -247,7 +278,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         } else {
                             let old = std::mem::replace(&mut screen, Screen::Config { selected: 0, prev_game: None });
                             if let Screen::Config { prev_game: Some((state, handle)), .. } = old {
-                                screen = Screen::Running { state, handle };
+                                screen = Screen::Running { state, handle, start_time: Instant::now() };
                                 cfg_snapshot = None;
                             }
                         }
@@ -256,7 +287,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let old = std::mem::replace(&mut screen, Screen::Config { selected: 0, prev_game: None });
                         stop_screen(old);
                         let (state, handle) = start_simulation(&cfg);
-                        screen = Screen::Running { state, handle };
+                        screen = Screen::Running { state, handle, start_time: Instant::now() };
                         cfg_snapshot = None;
                     }
                     Action::ConfirmReturn => {
@@ -265,7 +296,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         let old = std::mem::replace(&mut screen, Screen::Config { selected: 0, prev_game: None });
                         if let Screen::ConfirmDialog { prev_game: (state, handle), .. } = old {
-                            screen = Screen::Running { state, handle };
+                            screen = Screen::Running { state, handle, start_time: Instant::now() };
                         }
                     }
                     Action::BackToConfig => {

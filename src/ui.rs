@@ -255,6 +255,64 @@ pub fn draw_confirm_dialog(f: &mut Frame, selected: usize) {
     f.render_widget(Paragraph::new(lines), inner);
 }
 
+pub fn draw_victory_dialog(f: &mut Frame, elapsed_secs: u64) {
+    let area = f.area();
+
+    let popup_w = 62u16;
+    let popup_h = 12u16;
+    let x = (area.width.saturating_sub(popup_w)) / 2;
+    let y = (area.height.saturating_sub(popup_h)) / 2;
+    let popup_area = Rect { x, y, width: popup_w.min(area.width), height: popup_h.min(area.height) };
+
+    f.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Partie terminee ! ")
+        .title_alignment(Alignment::Center)
+        .style(Style::default().bg(Color::Black));
+    let inner = block.inner(popup_area);
+    f.render_widget(block, popup_area);
+
+    let mins = elapsed_secs / 60;
+    let secs = elapsed_secs % 60;
+    let time_str = if mins > 0 {
+        format!("{}m {}s", mins, secs)
+    } else {
+        format!("{}s", secs)
+    };
+
+    let lines = vec![
+        Line::raw(""),
+        Line::from(Span::styled(
+            "  Bravo ! Toutes les ressources ont ete recoltees !",
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        )),
+        Line::raw(""),
+        Line::from(vec![
+            Span::raw("  Temps ecoule : "),
+            Span::styled(time_str, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::raw(""),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                "  [ Nouvelle partie ]  ",
+                Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("  Enter ", Style::default().fg(Color::Yellow)),
+            Span::raw("Nouvelle partie   "),
+            Span::styled(" Q/Esc ", Style::default().fg(Color::Yellow)),
+            Span::raw("Quitter"),
+        ]),
+    ];
+
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
 fn draw_stats(f: &mut Frame, state: &SimState, area: ratatui::layout::Rect) {
     let carrying = state.robots.iter().filter(|r| r.carrying).count();
     let known = state.knowledge.resources.len();
