@@ -422,6 +422,7 @@ dependencies = [
  "ratatui",
  "serde",
  "serde_json",
+ "winapi",
 ]
 
 [[package]]

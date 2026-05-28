@@ -28,12 +28,19 @@ pub fn base_processor(
     for msg in rx {
         let mut s = state.lock().unwrap();
         match msg {
-            Message::ResourceDiscovered { pos, kind, quantity } => {
+            Message::ResourceDiscovered {
+                pos,
+                kind,
+                quantity,
+            } => {
                 s.knowledge.resources.entry(pos).or_insert((kind, quantity));
             }
             Message::ResourceCollected { pos, kind, amount } => {
                 match kind {
-                    ResourceKind::Energy => s.collected_energy += amount,
+                    ResourceKind::Energy => {
+                        s.collected_energy += amount;
+                        s.available_energy += amount;
+                    }
                     ResourceKind::Crystal => s.collected_crystals += amount,
                 }
                 if let Some(entry) = s.knowledge.resources.get_mut(&pos) {
@@ -100,24 +107,40 @@ pub fn run_scout(
             }
 
             let occupied = occupied_by_others(&s, robot_idx);
-            let neighbors = pathfinding::passable_neighbors(&s.map, pos);
 
-            // Prefer free (non-robot-occupied) neighbors; fall back to any if all blocked.
-            let candidates: Vec<Pos> = {
-                let free: Vec<Pos> = neighbors.iter().copied().filter(|p| !occupied.contains(p)).collect();
-                if !free.is_empty() { free } else { neighbors }
-            };
-
-            pos = if candidates.is_empty() {
-                pos
+            if let Some(rally_pos) = s.scout_rally_pos {
+                if pos != rally_pos {
+                    let mut path = pathfinding::bfs(&s.map, pos, rally_pos).unwrap_or_default();
+                    if let Some(next) = path.first().copied() {
+                        if !occupied.contains(&next) {
+                            pos = next;
+                        } else {
+                            step_aside(&s.map, &mut pos, &mut path, rally_pos, &occupied, &mut rng);
+                        }
+                    }
+                }
             } else {
-                // Pick the candidate(s) with the fewest prior visits, then choose randomly among ties.
-                let min_visits = candidates.iter().map(|p| *visit_counts.get(p).unwrap_or(&0)).min().unwrap();
-                let least_visited: Vec<Pos> = candidates.into_iter()
-                    .filter(|p| *visit_counts.get(p).unwrap_or(&0) == min_visits)
+                let candidates: Vec<Pos> = pathfinding::passable_neighbors(&s.map, pos)
+                    .into_iter()
+                    .filter(|p| !occupied.contains(p))
                     .collect();
-                least_visited[rng.gen_range(0..least_visited.len())]
-            };
+
+                pos = if candidates.is_empty() {
+                    pos
+                } else {
+                    // Pick the candidate(s) with the fewest prior visits, then choose randomly among ties.
+                    let min_visits = candidates
+                        .iter()
+                        .map(|p| *visit_counts.get(p).unwrap_or(&0))
+                        .min()
+                        .unwrap();
+                    let least_visited: Vec<Pos> = candidates
+                        .into_iter()
+                        .filter(|p| *visit_counts.get(p).unwrap_or(&0) == min_visits)
+                        .collect();
+                    least_visited[rng.gen_range(0..least_visited.len())]
+                };
+            }
 
             *visit_counts.entry(pos).or_insert(0) += 1;
 
@@ -297,11 +320,13 @@ pub fn run_collector(
                         // Wander until scouts discover something
                         let occupied = occupied_by_others(&s, robot_idx);
                         let neighbors = pathfinding::passable_neighbors(&s.map, pos);
-                        let free: Vec<Pos> = neighbors.iter().copied().filter(|p| !occupied.contains(p)).collect();
+                        let free: Vec<Pos> = neighbors
+                            .iter()
+                            .copied()
+                            .filter(|p| !occupied.contains(p))
+                            .collect();
                         if !free.is_empty() {
                             pos = free[rng.gen_range(0..free.len())];
-                        } else if !neighbors.is_empty() {
-                            pos = neighbors[rng.gen_range(0..neighbors.len())];
                         }
                     }
                 }
@@ -345,57 +370,82 @@ fn step_aside(
     if alternatives.is_empty() {
         return false;
     }
-    let min_d = alternatives.iter().map(|p| manhattan(*p, goal)).min().unwrap();
-    let tied: Vec<Pos> = alternatives.into_iter().filter(|p| manhattan(*p, goal) == min_d).collect();
+    let min_d = alternatives
+        .iter()
+        .map(|p| manhattan(*p, goal))
+        .min()
+        .unwrap();
+    let tied: Vec<Pos> = alternatives
+        .into_iter()
+        .filter(|p| manhattan(*p, goal) == min_d)
+        .collect();
     path.clear();
     *pos = tied[rng.gen_range(0..tied.len())];
     true
 }
 
 fn occupied_by_others(s: &SimState, self_idx: usize) -> HashSet<Pos> {
-    s.robots
+    let mut occupied: HashSet<Pos> = s
+        .robots
         .iter()
         .enumerate()
         .filter(|(i, _)| *i != self_idx)
         .map(|(_, r)| (r.x, r.y))
-        .collect()
+        .collect();
+    occupied.insert(s.player_pos());
+    occupied
 }
 
 fn best_target(s: &SimState, pos: Pos, priority: &Priority) -> Option<Pos> {
-    let dist = |p: &Pos| -> i32 {
-        (pos.0 as i32 - p.0 as i32).abs() + (pos.1 as i32 - p.1 as i32).abs()
-    };
+    let dist =
+        |p: &Pos| -> i32 { (pos.0 as i32 - p.0 as i32).abs() + (pos.1 as i32 - p.1 as i32).abs() };
     let available = |p: &&Pos| s.resources.contains_key(*p) && !s.reserved.contains(*p);
 
     match priority {
-        Priority::Energy => {
-            s.knowledge
-                .resources
-                .iter()
-                .filter(|(p, (k, _))| {
-                    s.resources.contains_key(*p) && !s.reserved.contains(*p) && *k == ResourceKind::Energy
-                })
-                .min_by_key(|(p, _)| dist(p))
-                .map(|(p, _)| *p)
-                .or_else(|| {
-                    s.knowledge.resources.keys().filter(available).min_by_key(|p| dist(p)).copied()
-                })
-        }
-        Priority::Crystal => {
-            s.knowledge
-                .resources
-                .iter()
-                .filter(|(p, (k, _))| {
-                    s.resources.contains_key(*p) && !s.reserved.contains(*p) && *k == ResourceKind::Crystal
-                })
-                .min_by_key(|(p, _)| dist(p))
-                .map(|(p, _)| *p)
-                .or_else(|| {
-                    s.knowledge.resources.keys().filter(available).min_by_key(|p| dist(p)).copied()
-                })
-        }
-        Priority::None => {
-            s.knowledge.resources.keys().filter(available).min_by_key(|p| dist(p)).copied()
-        }
+        Priority::Energy => s
+            .knowledge
+            .resources
+            .iter()
+            .filter(|(p, (k, _))| {
+                s.resources.contains_key(*p)
+                    && !s.reserved.contains(*p)
+                    && *k == ResourceKind::Energy
+            })
+            .min_by_key(|(p, _)| dist(p))
+            .map(|(p, _)| *p)
+            .or_else(|| {
+                s.knowledge
+                    .resources
+                    .keys()
+                    .filter(available)
+                    .min_by_key(|p| dist(p))
+                    .copied()
+            }),
+        Priority::Crystal => s
+            .knowledge
+            .resources
+            .iter()
+            .filter(|(p, (k, _))| {
+                s.resources.contains_key(*p)
+                    && !s.reserved.contains(*p)
+                    && *k == ResourceKind::Crystal
+            })
+            .min_by_key(|(p, _)| dist(p))
+            .map(|(p, _)| *p)
+            .or_else(|| {
+                s.knowledge
+                    .resources
+                    .keys()
+                    .filter(available)
+                    .min_by_key(|p| dist(p))
+                    .copied()
+            }),
+        Priority::None => s
+            .knowledge
+            .resources
+            .keys()
+            .filter(available)
+            .min_by_key(|p| dist(p))
+            .copied(),
     }
 }

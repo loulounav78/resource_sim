@@ -27,4 +27,5 @@ pub struct Config {
     pub energy_max: u32,
     pub crystal_min: u32,
     pub crystal_max: u32,
+    pub wall_break_power: u8,
 }

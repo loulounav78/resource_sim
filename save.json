@@ -1,16 +1,18 @@
 {
-  "total_energy": 23247,
-  "total_crystals": 21551,
+  "total_energy": 48638,
+  "total_crystals": 15541,
   "num_scouts": 10,
   "num_collectors": 10,
   "carry_capacity": 50,
   "energy_bonus": 90,
   "crystal_bonus": 50,
+  "wall_break_power": 3,
   "upgrade_counts": [
-    0,
+    32,
     0,
     6,
     9,
-    0
+    0,
+    2
   ]
 }
