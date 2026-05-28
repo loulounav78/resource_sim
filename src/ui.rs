@@ -6,126 +6,322 @@ use ratatui::{
     Frame,
 };
 
-use crate::config::{Config, Priority, NUM_FIELDS};
+use crate::levels::LEVELS;
 use crate::map::Tile;
+use crate::save::SaveData;
 use crate::simulation::{RobotKind, SimState};
+use crate::store::{item_cost, STORE_ITEMS};
 use crate::types::ResourceKind;
 
 // ──────────────────────────────────────────────────────────────
-//  Config screen
+//  Menu principal
 // ──────────────────────────────────────────────────────────────
 
-pub fn draw_config(f: &mut Frame, config: &Config, selected: usize, has_prev_game: bool) {
+pub fn draw_main_menu(f: &mut Frame, selected: usize, save: &SaveData) {
     let area = f.area();
 
-    let title = if has_prev_game {
-        " Resource Simulation — Configuration  (partie en cours) "
-    } else {
-        " Resource Simulation — Configuration "
-    };
-    let block = Block::default()
+    let outer = Block::default()
         .borders(Borders::ALL)
-        .title(title)
+        .title(" RESOURCE SIMULATION ")
         .title_alignment(Alignment::Center);
-    f.render_widget(block, area);
+    f.render_widget(outer, area);
 
     let inner = area.inner(Margin { horizontal: 2, vertical: 1 });
 
-    // Header
-    let header = Line::from(vec![
-        Span::styled("  Parameter                  ", Style::default().add_modifier(Modifier::BOLD)),
-        Span::styled("Value                     ", Style::default().add_modifier(Modifier::BOLD)),
-        Span::styled("Controls", Style::default().add_modifier(Modifier::BOLD)),
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // barre ressources
+            Constraint::Length(2),  // label "Selectionnez"
+            Constraint::Length(10), // cartes de niveau
+            Constraint::Length(5),  // bouton STORE
+            Constraint::Min(1),     // espace flexible
+            Constraint::Length(1),  // footer
+        ])
+        .split(inner);
+
+    // Barre de ressources
+    let res_line = Line::from(vec![
+        Span::raw("  "),
+        Span::styled("Energie : ", Style::default().fg(Color::Green)),
+        Span::styled(
+            save.total_energy.to_string(),
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("      Cristaux : ", Style::default().fg(Color::LightMagenta)),
+        Span::styled(
+            save.total_crystals.to_string(),
+            Style::default().fg(Color::LightMagenta).add_modifier(Modifier::BOLD),
+        ),
     ]);
+    f.render_widget(
+        Paragraph::new(res_line)
+            .block(Block::default().borders(Borders::ALL).title(" Ressources ")),
+        chunks[0],
+    );
 
-    let separator = Line::from(Span::styled(
-        "─".repeat(inner.width as usize),
-        Style::default().fg(Color::DarkGray),
-    ));
+    // Label
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "  Selectionnez un niveau :",
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        ))),
+        chunks[1],
+    );
 
-    let mut lines: Vec<Line> = vec![header, separator, Line::raw("")];
+    // Cartes de niveau — 5 colonnes égales
+    let card_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(20),
+            Constraint::Percentage(20),
+            Constraint::Percentage(20),
+            Constraint::Percentage(20),
+            Constraint::Percentage(20),
+        ])
+        .split(chunks[2]);
 
-    for i in 0..NUM_FIELDS {
-        let is_selected = i == selected;
-        let is_start_btn = i == NUM_FIELDS - 1;
+    for (i, lvl) in LEVELS.iter().enumerate() {
+        let is_sel = i == selected;
+        let card_area = card_cols[i].inner(Margin { horizontal: 1, vertical: 0 });
 
-        let arrow = if is_selected { "► " } else { "  " };
+        let border_style = if is_sel {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
 
-        let base_style = if is_selected {
+        let card_block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style)
+            .title(if is_sel {
+                format!(" Niv.{} ", i + 1)
+            } else {
+                format!(" Niv.{} ", i + 1)
+            })
+            .title_alignment(Alignment::Center)
+            .title_style(if is_sel {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            });
+
+        let card_inner = card_block.inner(card_area);
+        f.render_widget(card_block, card_area);
+
+        let subtitle_style = if is_sel {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+
+        let e_range = format!("{}-{}", lvl.energy_min, lvl.energy_max);
+        let c_range = format!("{}-{}", lvl.crystal_min, lvl.crystal_max);
+
+        let lines = vec![
+            Line::from(Span::styled(lvl.subtitle, subtitle_style)),
+            Line::raw(""),
+            Line::from(vec![
+                Span::styled("E: ", Style::default().fg(Color::Green)),
+                Span::styled(&e_range, Style::default().fg(Color::Green)),
+            ]),
+            Line::from(vec![
+                Span::styled("C: ", Style::default().fg(Color::LightMagenta)),
+                Span::styled(&c_range, Style::default().fg(Color::LightMagenta)),
+            ]),
+            Line::raw(""),
+            if is_sel {
+                Line::from(Span::styled(
+                    "[ Enter ]",
+                    Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD),
+                ))
+            } else {
+                Line::raw("")
+            },
+        ];
+
+        f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), card_inner);
+    }
+
+    // Bouton STORE
+    let store_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title_alignment(Alignment::Center);
+    let store_inner = store_block.inner(chunks[3]);
+    f.render_widget(store_block, chunks[3]);
+
+    let store_lines = vec![
+        Line::raw(""),
+        Line::from(Span::styled(
+            "  [ S T O R E ]  — ameliorez vos bots avec vos cristaux",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "  Appuyez sur  S  pour entrer",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+    f.render_widget(Paragraph::new(store_lines).alignment(Alignment::Center), store_inner);
+
+    // Footer
+    let footer = Line::from(vec![
+        Span::styled(" <- -> ", Style::default().fg(Color::Yellow)),
+        Span::raw("Choisir niveau   "),
+        Span::styled(" Enter ", Style::default().fg(Color::Yellow)),
+        Span::raw("Jouer   "),
+        Span::styled(" S ", Style::default().fg(Color::Cyan)),
+        Span::raw("Store   "),
+        Span::styled(" Q ", Style::default().fg(Color::Yellow)),
+        Span::raw("Quitter"),
+    ]);
+    f.render_widget(Paragraph::new(footer), chunks[5]);
+}
+
+// ──────────────────────────────────────────────────────────────
+//  Store
+// ──────────────────────────────────────────────────────────────
+
+pub fn draw_store(f: &mut Frame, selected_item: usize, save: &SaveData, feedback: Option<(&str, bool)>) {
+    let area = f.area();
+
+    let outer = Block::default()
+        .borders(Borders::ALL)
+        .title(" STORE — Depensez vos cristaux pour ameliorer vos bots ")
+        .title_alignment(Alignment::Center);
+    f.render_widget(outer, area);
+
+    let inner = area.inner(Margin { horizontal: 2, vertical: 1 });
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // ressources
+            Constraint::Length(1),  // espace
+            Constraint::Length(11), // items (5 × 2 lignes + 1 intro)
+            Constraint::Length(1),  // feedback
+            Constraint::Length(5),  // stats actuelles
+            Constraint::Min(0),     // espace flexible
+            Constraint::Length(1),  // footer
+        ])
+        .split(inner);
+
+    // Barre de ressources
+    let res_line = Line::from(vec![
+        Span::raw("  "),
+        Span::styled("Energie : ", Style::default().fg(Color::Green)),
+        Span::styled(
+            save.total_energy.to_string(),
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("      Cristaux disponibles : ", Style::default().fg(Color::LightMagenta)),
+        Span::styled(
+            save.total_crystals.to_string(),
+            Style::default().fg(Color::LightMagenta).add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    f.render_widget(
+        Paragraph::new(res_line)
+            .block(Block::default().borders(Borders::ALL).title(" Ressources ")),
+        chunks[0],
+    );
+
+    // Liste des items
+    let mut item_lines: Vec<Line> = vec![Line::raw("")];
+    for (i, item) in STORE_ITEMS.iter().enumerate() {
+        let is_sel = i == selected_item;
+        let cost = item_cost(i, save);
+        let can_afford = save.total_crystals >= cost;
+
+        let arrow = if is_sel { "► " } else { "  " };
+
+        let name_style = if is_sel {
             Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::White)
         };
 
-        if is_start_btn {
-            lines.push(Line::raw(""));
-            let btn_style = if is_selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Green)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD)
-            };
-            lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled("  [ Start Simulation ]  ", btn_style),
-                Span::styled("  (Enter)", Style::default().fg(Color::DarkGray)),
-            ]));
+        let cost_style = if can_afford {
+            Style::default().fg(Color::LightMagenta).add_modifier(Modifier::BOLD)
         } else {
-            let label = Config::field_label(i);
-            let value = config.field_value(i);
+            Style::default().fg(Color::Red)
+        };
 
-            let controls = match i {
-                2 => "← → cycle",
-                _ => "← → adjust",
-            };
+        item_lines.push(Line::from(vec![
+            Span::styled(format!("{}{:<22}", arrow, item.name), name_style),
+            Span::styled(format!("{:<38}", item.description), Style::default().fg(Color::Gray)),
+            Span::styled("Cout: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("{} cristaux", cost), cost_style),
+        ]));
+        item_lines.push(Line::raw(""));
+    }
+    f.render_widget(Paragraph::new(item_lines), chunks[2]);
 
-            // Color-code values by category
-            let value_color = match i {
-                0 | 1 => Color::Cyan,
-                2 => match config.priority {
-                    Priority::Energy => Color::Green,
-                    Priority::Crystal => Color::LightMagenta,
-                    Priority::None => Color::Gray,
-                },
-                3 => Color::LightYellow,
-                4 | 5 => Color::Green,
-                6 | 7 => Color::LightMagenta,
-                _ => Color::White,
-            };
-
-            lines.push(Line::from(vec![
-                Span::styled(format!("{}{:<24}", arrow, label), base_style),
-                Span::styled(format!("{:<26}", value), Style::default().fg(value_color)),
-                Span::styled(controls, Style::default().fg(Color::DarkGray)),
-            ]));
-        }
+    // Feedback
+    if let Some((msg, is_ok)) = feedback {
+        let color = if is_ok { Color::Green } else { Color::Red };
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("  {}", msg),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ))),
+            chunks[3],
+        );
     }
 
-    lines.push(Line::raw(""));
-    lines.push(Line::raw(""));
-
-    let mut footer_spans = vec![
-        Span::styled(" ↑ ↓ ", Style::default().fg(Color::Yellow)),
-        Span::raw("Navigate   "),
-        Span::styled(" ← → ", Style::default().fg(Color::Yellow)),
-        Span::raw("Adjust   "),
-        Span::styled(" Enter ", Style::default().fg(Color::Yellow)),
-        Span::raw("Start   "),
-        Span::styled(" Q ", Style::default().fg(Color::Yellow)),
-        Span::raw("Quit"),
+    // Stats actuelles
+    let stats_lines = vec![
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled("Scouts: ", Style::default().fg(Color::Red)),
+            Span::styled(
+                save.num_scouts.to_string(),
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("   "),
+            Span::styled("Collectors: ", Style::default().fg(Color::Magenta)),
+            Span::styled(
+                save.num_collectors.to_string(),
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("   "),
+            Span::styled("Cargo: ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                save.carry_capacity.to_string(),
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled("Bonus Energie:  ", Style::default().fg(Color::Green)),
+            Span::styled(
+                format!("+{}", save.energy_bonus),
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("   "),
+            Span::styled("Bonus Cristaux: ", Style::default().fg(Color::LightMagenta)),
+            Span::styled(
+                format!("+{}", save.crystal_bonus),
+                Style::default().fg(Color::LightMagenta).add_modifier(Modifier::BOLD),
+            ),
+        ]),
     ];
-    if has_prev_game {
-        footer_spans.push(Span::raw("   "));
-        footer_spans.push(Span::styled(" Esc ", Style::default().fg(Color::Cyan)));
-        footer_spans.push(Span::styled("Retour à la partie", Style::default().fg(Color::Cyan)));
-    }
-    lines.push(Line::from(footer_spans));
+    f.render_widget(
+        Paragraph::new(stats_lines)
+            .block(Block::default().borders(Borders::ALL).title(" Configuration actuelle ")),
+        chunks[4],
+    );
 
-    f.render_widget(Paragraph::new(lines), inner);
+    // Footer
+    let footer = Line::from(vec![
+        Span::styled(" Up Down ", Style::default().fg(Color::Yellow)),
+        Span::raw("Naviguer   "),
+        Span::styled(" Enter ", Style::default().fg(Color::Yellow)),
+        Span::raw("Acheter   "),
+        Span::styled(" Esc ", Style::default().fg(Color::Yellow)),
+        Span::raw("Retour au menu"),
+    ]);
+    f.render_widget(Paragraph::new(footer), chunks[6]);
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -143,10 +339,10 @@ pub fn draw_simulation(f: &mut Frame, state: &SimState) {
     draw_stats(f, state, chunks[1]);
 }
 
-fn draw_map(f: &mut Frame, state: &SimState, area: ratatui::layout::Rect) {
+fn draw_map(f: &mut Frame, state: &SimState, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Resource Collection Simulation — any key → config  |  Q/Esc → quitter ");
+        .title(" Resource Collection Simulation  —  Q/Esc → retour au menu ");
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -160,7 +356,6 @@ fn draw_map(f: &mut Frame, state: &SimState, area: ratatui::layout::Rect) {
     for y in 0..map_h {
         let mut spans: Vec<Span> = Vec::with_capacity(map_w);
         for x in 0..map_w {
-            // Robots have highest draw priority
             if let Some(robot) = state.robots.iter().find(|r| r.x == x && r.y == y) {
                 let (ch, color) = match robot.kind {
                     RobotKind::Scout => ("x", Color::Red),
@@ -172,21 +367,19 @@ fn draw_map(f: &mut Frame, state: &SimState, area: ratatui::layout::Rect) {
                 continue;
             }
 
-            // Resources
             if let Some(res) = state.resources.get(&(x, y)) {
                 let (ch, color) = match res.kind {
-                    ResourceKind::Energy => ("E", Color::Green),
+                    ResourceKind::Energy  => ("E", Color::Green),
                     ResourceKind::Crystal => ("C", Color::LightMagenta),
                 };
                 spans.push(Span::styled(ch, Style::default().fg(color)));
                 continue;
             }
 
-            // Tiles
             spans.push(match state.map.tiles[y][x] {
                 Tile::Obstacle => Span::styled("O", Style::default().fg(Color::LightCyan)),
-                Tile::Base => Span::styled("#", Style::default().fg(Color::LightGreen)),
-                Tile::Empty => Span::raw(" "),
+                Tile::Base     => Span::styled("#", Style::default().fg(Color::LightGreen)),
+                Tile::Empty    => Span::raw(" "),
             });
         }
         lines.push(Line::from(spans));
@@ -195,74 +388,30 @@ fn draw_map(f: &mut Frame, state: &SimState, area: ratatui::layout::Rect) {
     f.render_widget(Paragraph::new(lines), inner);
 }
 
-pub fn draw_confirm_dialog(f: &mut Frame, selected: usize) {
+// ──────────────────────────────────────────────────────────────
+//  Victory dialog
+// ──────────────────────────────────────────────────────────────
+
+pub fn draw_victory_dialog(
+    f: &mut Frame,
+    elapsed_secs: u64,
+    energy_earned: u32,
+    crystals_earned: u32,
+    total_energy: u32,
+    total_crystals: u32,
+) {
     let area = f.area();
 
-    let popup_w = 62u16;
-    let popup_h = 11u16;
+    let popup_w = 66u16;
+    let popup_h = 18u16;
     let x = (area.width.saturating_sub(popup_w)) / 2;
     let y = (area.height.saturating_sub(popup_h)) / 2;
-    let popup_area = Rect { x, y, width: popup_w.min(area.width), height: popup_h.min(area.height) };
-
-    f.render_widget(Clear, popup_area);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Stats modifiées ")
-        .title_alignment(Alignment::Center)
-        .style(Style::default().bg(Color::Black));
-    let inner = block.inner(popup_area);
-    f.render_widget(block, popup_area);
-
-    let opt0_style = if selected == 0 {
-        Style::default().fg(Color::Black).bg(Color::Red).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::Gray)
+    let popup_area = Rect {
+        x,
+        y,
+        width: popup_w.min(area.width),
+        height: popup_h.min(area.height),
     };
-    let opt1_style = if selected == 1 {
-        Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::Gray)
-    };
-
-    let lines = vec![
-        Line::raw(""),
-        Line::from(Span::styled(
-            "  Les statistiques ont été modifiées.",
-            Style::default().fg(Color::Yellow),
-        )),
-        Line::raw(""),
-        Line::from(vec![
-            Span::raw(if selected == 0 { " ► " } else { "   " }),
-            Span::styled("  Nouvelle partie avec les nouvelles stats  ", opt0_style),
-        ]),
-        Line::raw(""),
-        Line::from(vec![
-            Span::raw(if selected == 1 { " ► " } else { "   " }),
-            Span::styled("  Retourner à la partie en cours (annuler)  ", opt1_style),
-        ]),
-        Line::raw(""),
-        Line::from(vec![
-            Span::styled("  ↑ ↓ ", Style::default().fg(Color::Yellow)),
-            Span::raw("Choisir   "),
-            Span::styled(" Enter ", Style::default().fg(Color::Yellow)),
-            Span::raw("Confirmer   "),
-            Span::styled(" Esc ", Style::default().fg(Color::Yellow)),
-            Span::raw("Retour config"),
-        ]),
-    ];
-
-    f.render_widget(Paragraph::new(lines), inner);
-}
-
-pub fn draw_victory_dialog(f: &mut Frame, elapsed_secs: u64) {
-    let area = f.area();
-
-    let popup_w = 62u16;
-    let popup_h = 12u16;
-    let x = (area.width.saturating_sub(popup_w)) / 2;
-    let y = (area.height.saturating_sub(popup_h)) / 2;
-    let popup_area = Rect { x, y, width: popup_w.min(area.width), height: popup_h.min(area.height) };
 
     f.render_widget(Clear, popup_area);
 
@@ -294,50 +443,87 @@ pub fn draw_victory_dialog(f: &mut Frame, elapsed_secs: u64) {
             Span::styled(time_str, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
         ]),
         Line::raw(""),
+        Line::from(Span::styled(
+            "  Recolte cette partie :",
+            Style::default().fg(Color::DarkGray),
+        )),
         Line::from(vec![
-            Span::raw("  "),
+            Span::raw("    "),
             Span::styled(
-                "  [ Nouvelle partie ]  ",
-                Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD),
+                format!("Energie +{}  ", energy_earned),
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("Cristaux +{}", crystals_earned),
+                Style::default().fg(Color::LightMagenta).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::raw(""),
+        Line::from(Span::styled(
+            "  Total accumule :",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(vec![
+            Span::raw("    "),
+            Span::styled(
+                format!("Energie {}  ", total_energy),
+                Style::default().fg(Color::Green),
+            ),
+            Span::styled(
+                format!("Cristaux {}", total_crystals),
+                Style::default().fg(Color::LightMagenta),
             ),
         ]),
         Line::raw(""),
         Line::from(vec![
-            Span::styled("  Enter ", Style::default().fg(Color::Yellow)),
-            Span::raw("Nouvelle partie   "),
-            Span::styled(" Q/Esc ", Style::default().fg(Color::Yellow)),
-            Span::raw("Quitter"),
+            Span::raw("  "),
+            Span::styled(
+                "  [ Retour au menu ]  ",
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("  Enter / Esc ", Style::default().fg(Color::Yellow)),
+            Span::raw("Retour au menu"),
         ]),
     ];
 
     f.render_widget(Paragraph::new(lines), inner);
 }
 
-fn draw_stats(f: &mut Frame, state: &SimState, area: ratatui::layout::Rect) {
-    let carrying = state.robots.iter().filter(|r| r.carrying).count();
-    let known = state.knowledge.resources.len();
+// ──────────────────────────────────────────────────────────────
+//  Stats bar
+// ──────────────────────────────────────────────────────────────
+
+fn draw_stats(f: &mut Frame, state: &SimState, area: Rect) {
+    let carrying  = state.robots.iter().filter(|r| r.carrying).count();
+    let known     = state.knowledge.resources.len();
     let remaining = state.resources.len();
 
     let line = Line::from(vec![
         Span::styled(
-            format!(" ⚡ Energy: {} ", state.collected_energy),
+            format!(" Energie: {} ", state.collected_energy),
             Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
         ),
-        Span::styled("│ ", Style::default().fg(Color::DarkGray)),
+        Span::styled("| ", Style::default().fg(Color::DarkGray)),
         Span::styled(
-            format!("💎 Crystals: {} ", state.collected_crystals),
+            format!("Cristaux: {} ", state.collected_crystals),
             Style::default().fg(Color::LightMagenta).add_modifier(Modifier::BOLD),
         ),
-        Span::styled("│ ", Style::default().fg(Color::DarkGray)),
+        Span::styled("| ", Style::default().fg(Color::DarkGray)),
         Span::styled(
-            format!("Resources left: {} ", remaining),
+            format!("Restantes: {} ", remaining),
             Style::default().fg(Color::Yellow),
         ),
-        Span::styled("│ ", Style::default().fg(Color::DarkGray)),
-        Span::styled(format!("Known: {} ", known), Style::default().fg(Color::Cyan)),
-        Span::styled("│ ", Style::default().fg(Color::DarkGray)),
+        Span::styled("| ", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("Connues: {} ", known), Style::default().fg(Color::Cyan)),
+        Span::styled("| ", Style::default().fg(Color::DarkGray)),
         Span::raw(format!(
-            "Scouts: {}  Collectors: {} ({} carrying)",
+            "Scouts: {}  Collectors: {} ({} portent)",
             state.robots.iter().filter(|r| r.kind == RobotKind::Scout).count(),
             state.robots.iter().filter(|r| r.kind == RobotKind::Collector).count(),
             carrying,

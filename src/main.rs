@@ -1,9 +1,12 @@
 mod config;
+mod levels;
 mod map;
 mod message;
 mod pathfinding;
 mod robot;
+mod save;
 mod simulation;
+mod store;
 mod types;
 mod ui;
 
@@ -23,7 +26,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use config::{Config, NUM_FIELDS};
+use config::{Config, Priority};
+use levels::LEVELS;
 use map::Map;
 use simulation::{RobotDisplay, RobotKind, SimState};
 
@@ -35,7 +39,6 @@ const UI_TICK_MS: u64 = 80;
 
 struct SimHandle {
     running: Arc<AtomicBool>,
-    /// Robot threads first, base_processor last (so it exits after robots drop their senders).
     handles: Vec<JoinHandle<()>>,
 }
 
@@ -48,10 +51,27 @@ impl SimHandle {
     }
 }
 
+fn build_config(level_idx: usize, save: &save::SaveData) -> Config {
+    let lvl = &LEVELS[level_idx];
+    Config {
+        num_scouts: save.num_scouts,
+        num_collectors: save.num_collectors,
+        priority: Priority::None,
+        carry_capacity: save.carry_capacity,
+        energy_min: lvl.energy_min + save.energy_bonus,
+        energy_max: lvl.energy_max + save.energy_bonus,
+        crystal_min: lvl.crystal_min + save.crystal_bonus,
+        crystal_max: lvl.crystal_max + save.crystal_bonus,
+    }
+}
+
 fn start_simulation(cfg: &Config) -> (Arc<Mutex<SimState>>, SimHandle) {
     let seed: u32 = rand::random();
-    let (map, resources) =
-        Map::generate(MAP_WIDTH, MAP_HEIGHT, seed, (cfg.energy_min, cfg.energy_max), (cfg.crystal_min, cfg.crystal_max));
+    let (map, resources) = Map::generate(
+        MAP_WIDTH, MAP_HEIGHT, seed,
+        (cfg.energy_min, cfg.energy_max),
+        (cfg.crystal_min, cfg.crystal_max),
+    );
     let base_pos = map.base_pos();
 
     let mut initial = SimState::new(map, resources);
@@ -103,31 +123,31 @@ fn start_simulation(cfg: &Config) -> (Arc<Mutex<SimState>>, SimHandle) {
 // ── App screen state ────────────────────────────────────────────
 
 enum Screen {
-    Config {
+    MainMenu {
         selected: usize,
-        prev_game: Option<(Arc<Mutex<SimState>>, SimHandle)>,
+    },
+    Store {
+        selected_item: usize,
+        feedback: Option<(&'static str, bool)>, // (message, is_success)
     },
     Running {
         state: Arc<Mutex<SimState>>,
         handle: SimHandle,
         start_time: Instant,
-    },
-    ConfirmDialog {
-        option: usize, // 0 = nouvelle partie, 1 = retour à la partie
-        prev_game: (Arc<Mutex<SimState>>, SimHandle),
+        #[allow(dead_code)]
+        level: usize,
     },
     VictoryDialog {
         state: Arc<Mutex<SimState>>,
         elapsed_secs: u64,
+        energy_earned: u32,
+        crystals_earned: u32,
     },
 }
 
 fn stop_screen(screen: Screen) {
-    match screen {
-        Screen::Running { handle, .. } => handle.stop(),
-        Screen::Config { prev_game: Some((_, handle)), .. } => handle.stop(),
-        Screen::ConfirmDialog { prev_game: (_, handle), .. } => handle.stop(),
-        _ => {}
+    if let Screen::Running { handle, .. } = screen {
+        handle.stop();
     }
 }
 
@@ -140,38 +160,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut cfg = Config::default();
-    let mut cfg_snapshot: Option<Config> = None;
-    let mut screen = Screen::Config { selected: 0, prev_game: None };
+    let mut save = save::load();
+    let mut screen = Screen::MainMenu { selected: 0 };
     let tick = Duration::from_millis(UI_TICK_MS);
     let mut last_tick = Instant::now();
 
     'main: loop {
         // ── Render ────────────────────────────────────────────
         match &screen {
-            Screen::Config { selected, prev_game } => {
+            Screen::MainMenu { selected } => {
                 let sel = *selected;
-                let has_prev = prev_game.is_some();
-                terminal.draw(|f| ui::draw_config(f, &cfg, sel, has_prev))?;
+                terminal.draw(|f| ui::draw_main_menu(f, sel, &save))?;
+            }
+            Screen::Store { selected_item, feedback } => {
+                let sel = *selected_item;
+                let fb = *feedback;
+                terminal.draw(|f| ui::draw_store(f, sel, &save, fb))?;
             }
             Screen::Running { state, .. } => {
                 let s = state.lock().unwrap();
                 terminal.draw(|f| ui::draw_simulation(f, &s))?;
             }
-            Screen::ConfirmDialog { option, prev_game } => {
-                let opt = *option;
-                let s = prev_game.0.lock().unwrap();
-                terminal.draw(|f| {
-                    ui::draw_simulation(f, &s);
-                    ui::draw_confirm_dialog(f, opt);
-                })?;
-            }
-            Screen::VictoryDialog { state, elapsed_secs } => {
+            Screen::VictoryDialog { state, elapsed_secs, energy_earned, crystals_earned } => {
                 let s = state.lock().unwrap();
                 let secs = *elapsed_secs;
+                let ee = *energy_earned;
+                let ce = *crystals_earned;
+                let te = save.total_energy;
+                let tc = save.total_crystals;
                 terminal.draw(|f| {
                     ui::draw_simulation(f, &s);
-                    ui::draw_victory_dialog(f, secs);
+                    ui::draw_victory_dialog(f, secs, ee, ce, te, tc);
                 })?;
             }
         }
@@ -180,10 +199,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Screen::Running { state, start_time, .. } = &screen {
             if state.lock().unwrap().resources.is_empty() {
                 let elapsed_secs = start_time.elapsed().as_secs();
-                let old = std::mem::replace(&mut screen, Screen::Config { selected: 0, prev_game: None });
+                let old = std::mem::replace(&mut screen, Screen::MainMenu { selected: 0 });
                 if let Screen::Running { state, handle, .. } = old {
+                    let (energy_earned, crystals_earned) = {
+                        let s = state.lock().unwrap();
+                        (s.collected_energy, s.collected_crystals)
+                    };
+                    save.total_energy += energy_earned;
+                    save.total_crystals += crystals_earned;
+                    save::persist(&save);
                     handle.stop();
-                    screen = Screen::VictoryDialog { state, elapsed_secs };
+                    screen = Screen::VictoryDialog { state, elapsed_secs, energy_earned, crystals_earned };
                 }
                 continue;
             }
@@ -198,112 +224,85 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 enum Action {
                     None,
                     Quit,
-                    StartNew,
-                    OpenConfig,
-                    TryBack,
-                    ConfirmRestart,
-                    ConfirmReturn,
-                    BackToConfig,
+                    OpenStore,
+                    CloseStore,
+                    StartLevel(usize),
+                    StoreBuy(usize),
+                    QuitRunning,
+                    VictoryReturn,
                 }
 
                 let action = match &mut screen {
-                    Screen::Config { selected, prev_game } => match key.code {
-                        KeyCode::Char('q') => Action::Quit,
-                        KeyCode::Esc => {
-                            if prev_game.is_some() { Action::TryBack } else { Action::Quit }
-                        }
+                    Screen::MainMenu { selected } => match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
+                        KeyCode::Left  => { if *selected > 0 { *selected -= 1; } Action::None }
+                        KeyCode::Right => { if *selected < LEVELS.len() - 1 { *selected += 1; } Action::None }
+                        KeyCode::Char('s') | KeyCode::Char('S') => Action::OpenStore,
+                        KeyCode::Enter => Action::StartLevel(*selected),
+                        _ => Action::None,
+                    },
+                    Screen::Store { selected_item, feedback } => match key.code {
+                        KeyCode::Esc => Action::CloseStore,
                         KeyCode::Up => {
-                            if *selected > 0 { *selected -= 1; }
+                            if *selected_item > 0 { *selected_item -= 1; }
+                            *feedback = None;
                             Action::None
                         }
                         KeyCode::Down => {
-                            if *selected < NUM_FIELDS - 1 { *selected += 1; }
+                            if *selected_item < store::STORE_ITEMS.len() - 1 { *selected_item += 1; }
+                            *feedback = None;
                             Action::None
                         }
-                        KeyCode::Left => { cfg.adjust(*selected, -1); Action::None }
-                        KeyCode::Right => { cfg.adjust(*selected, 1); Action::None }
-                        KeyCode::Enter => Action::StartNew,
+                        KeyCode::Enter => Action::StoreBuy(*selected_item),
                         _ => Action::None,
                     },
                     Screen::Running { .. } => match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
-                        _ => Action::OpenConfig,
-                    },
-                    Screen::ConfirmDialog { option, .. } => match key.code {
-                        KeyCode::Esc => Action::BackToConfig,
-                        KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right => {
-                            *option = 1 - *option;
-                            Action::None
-                        }
-                        KeyCode::Enter => {
-                            if *option == 0 { Action::ConfirmRestart } else { Action::ConfirmReturn }
-                        }
+                        KeyCode::Char('q') | KeyCode::Esc => Action::QuitRunning,
                         _ => Action::None,
                     },
                     Screen::VictoryDialog { .. } => match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
-                        KeyCode::Enter => Action::StartNew,
+                        KeyCode::Enter | KeyCode::Char('q') | KeyCode::Esc => Action::VictoryReturn,
                         _ => Action::None,
                     },
                 };
 
                 match action {
-                    Action::Quit => {
-                        let old = std::mem::replace(&mut screen, Screen::Config { selected: 0, prev_game: None });
-                        stop_screen(old);
-                        break 'main;
+                    Action::Quit => break 'main,
+                    Action::OpenStore => {
+                        screen = Screen::Store { selected_item: 0, feedback: None };
                     }
-                    Action::StartNew => {
-                        let old = std::mem::replace(&mut screen, Screen::Config { selected: 0, prev_game: None });
-                        stop_screen(old);
+                    Action::CloseStore => {
+                        screen = Screen::MainMenu { selected: 0 };
+                    }
+                    Action::StartLevel(level) => {
+                        let cfg = build_config(level, &save);
                         let (state, handle) = start_simulation(&cfg);
-                        screen = Screen::Running { state, handle, start_time: Instant::now() };
-                        cfg_snapshot = None;
+                        screen = Screen::Running { state, handle, start_time: Instant::now(), level };
                     }
-                    Action::OpenConfig => {
-                        cfg_snapshot = Some(cfg.clone());
-                        let old = std::mem::replace(&mut screen, Screen::Config { selected: 0, prev_game: None });
-                        if let Screen::Running { state, handle, .. } = old {
-                            screen = Screen::Config { selected: 0, prev_game: Some((state, handle)) };
-                        }
-                    }
-                    Action::TryBack => {
-                        let modified = cfg_snapshot.as_ref().map_or(false, |snap| snap != &cfg);
-                        if modified {
-                            let old = std::mem::replace(&mut screen, Screen::Config { selected: 0, prev_game: None });
-                            if let Screen::Config { prev_game: Some(pg), .. } = old {
-                                // Default to option 1 (retour à la partie) — choix le plus sûr
-                                screen = Screen::ConfirmDialog { option: 1, prev_game: pg };
-                            }
+                    Action::StoreBuy(idx) => {
+                        let msg = if store::apply_upgrade(idx, &mut save) {
+                            save::persist(&save);
+                            ("Amelioration achetee !", true)
                         } else {
-                            let old = std::mem::replace(&mut screen, Screen::Config { selected: 0, prev_game: None });
-                            if let Screen::Config { prev_game: Some((state, handle)), .. } = old {
-                                screen = Screen::Running { state, handle, start_time: Instant::now() };
-                                cfg_snapshot = None;
-                            }
+                            ("Cristaux insuffisants !", false)
+                        };
+                        if let Screen::Store { feedback, .. } = &mut screen {
+                            *feedback = Some(msg);
                         }
                     }
-                    Action::ConfirmRestart => {
-                        let old = std::mem::replace(&mut screen, Screen::Config { selected: 0, prev_game: None });
-                        stop_screen(old);
-                        let (state, handle) = start_simulation(&cfg);
-                        screen = Screen::Running { state, handle, start_time: Instant::now() };
-                        cfg_snapshot = None;
-                    }
-                    Action::ConfirmReturn => {
-                        if let Some(snap) = cfg_snapshot.take() {
-                            cfg = snap;
-                        }
-                        let old = std::mem::replace(&mut screen, Screen::Config { selected: 0, prev_game: None });
-                        if let Screen::ConfirmDialog { prev_game: (state, handle), .. } = old {
-                            screen = Screen::Running { state, handle, start_time: Instant::now() };
+                    Action::QuitRunning => {
+                        let old = std::mem::replace(&mut screen, Screen::MainMenu { selected: 0 });
+                        if let Screen::Running { state, handle, .. } = old {
+                            let s = state.lock().unwrap();
+                            save.total_energy += s.collected_energy;
+                            save.total_crystals += s.collected_crystals;
+                            drop(s);
+                            save::persist(&save);
+                            handle.stop();
                         }
                     }
-                    Action::BackToConfig => {
-                        let old = std::mem::replace(&mut screen, Screen::Config { selected: 0, prev_game: None });
-                        if let Screen::ConfirmDialog { prev_game, .. } = old {
-                            screen = Screen::Config { selected: 0, prev_game: Some(prev_game) };
-                        }
+                    Action::VictoryReturn => {
+                        screen = Screen::MainMenu { selected: 0 };
                     }
                     Action::None => {}
                 }

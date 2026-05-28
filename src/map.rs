@@ -1,6 +1,6 @@
 use noise::{NoiseFn, Perlin};
 use rand::Rng;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::types::{Pos, Resource, ResourceKind};
 
@@ -51,6 +51,25 @@ impl Map {
             }
         }
 
+        // BFS depuis la base pour calculer les cellules accessibles
+        let mut reachable: HashSet<Pos> = HashSet::new();
+        let mut bfs_q: VecDeque<Pos> = VecDeque::new();
+        bfs_q.push_back((bx, by));
+        reachable.insert((bx, by));
+        while let Some((cx, cy)) = bfs_q.pop_front() {
+            for (dx, dy) in [(-1i32, 0), (1, 0), (0, -1i32), (0, 1)] {
+                let nx = cx as i32 + dx;
+                let ny = cy as i32 + dy;
+                if nx >= 0 && nx < width as i32 && ny >= 0 && ny < height as i32 {
+                    let npos = (nx as usize, ny as usize);
+                    if !reachable.contains(&npos) && tiles[npos.1][npos.0] != Tile::Obstacle {
+                        reachable.insert(npos);
+                        bfs_q.push_back(npos);
+                    }
+                }
+            }
+        }
+
         let mut rng = rand::thread_rng();
         let mut resources: HashMap<Pos, Resource> = HashMap::new();
         let target = (width * height) / 35;
@@ -59,7 +78,7 @@ impl Map {
         while resources.len() < target && attempts < 100_000 {
             let x = rng.gen_range(0..width);
             let y = rng.gen_range(0..height);
-            if tiles[y][x] == Tile::Empty && !resources.contains_key(&(x, y)) {
+            if tiles[y][x] == Tile::Empty && !resources.contains_key(&(x, y)) && reachable.contains(&(x, y)) {
                 let (kind, quantity) = if rng.gen_bool(0.5) {
                     (ResourceKind::Energy, rng.gen_range(energy_range.0..=energy_range.1))
                 } else {
