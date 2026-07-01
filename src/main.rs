@@ -72,8 +72,7 @@ fn build_config(level_idx: usize, save: &save::SaveData) -> Config {
     }
 }
 
-fn start_simulation(cfg: &Config) -> (Arc<Mutex<SimState>>, SimHandle) {
-    let seed: u32 = rand::random();
+fn start_simulation(cfg: &Config, seed: u32) -> (Arc<Mutex<SimState>>, SimHandle) {
     let (map, resources) = Map::generate(
         MAP_WIDTH,
         MAP_HEIGHT,
@@ -137,9 +136,19 @@ fn start_simulation(cfg: &Config) -> (Arc<Mutex<SimState>>, SimHandle) {
 
 // ── App screen state ────────────────────────────────────────────
 
+#[derive(Clone, Copy, PartialEq)]
+enum MainMenuFocus {
+    Levels,
+    SeedInput,
+    Favorites,
+}
+
 enum Screen {
     MainMenu {
         selected: usize,
+        focus: MainMenuFocus,
+        fav_selected: usize,
+        seed_input: String,
     },
     Store {
         selected_item: usize,
@@ -151,15 +160,26 @@ enum Screen {
         start_time: Instant,
         rally_until: Option<Instant>,
         rally_shift_held: bool,
-        #[allow(dead_code)]
         level: usize,
+        seed: u32,
     },
     VictoryDialog {
         state: Arc<Mutex<SimState>>,
         elapsed_secs: u64,
         energy_earned: u32,
         crystals_earned: u32,
+        level: usize,
+        seed: u32,
     },
+}
+
+fn main_menu_screen() -> Screen {
+    Screen::MainMenu {
+        selected: 0,
+        focus: MainMenuFocus::Levels,
+        fav_selected: 0,
+        seed_input: String::new(),
+    }
 }
 
 fn stop_screen(screen: Screen) {
@@ -277,7 +297,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut save = save::load();
-    let mut screen = Screen::MainMenu { selected: 0 };
+    let mut screen = main_menu_screen();
     let tick = Duration::from_millis(UI_TICK_MS);
     let mut last_tick = Instant::now();
 
@@ -286,9 +306,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // ── Render ────────────────────────────────────────────
         match &screen {
-            Screen::MainMenu { selected } => {
+            Screen::MainMenu {
+                selected,
+                focus,
+                fav_selected,
+                seed_input,
+            } => {
                 let sel = *selected;
-                terminal.draw(|f| ui::draw_main_menu(f, sel, &save))?;
+                let seed_focused = *focus == MainMenuFocus::SeedInput;
+                let fav_focused = *focus == MainMenuFocus::Favorites;
+                let fav_sel = *fav_selected;
+                terminal.draw(|f| {
+                    ui::draw_main_menu(
+                        f,
+                        sel,
+                        &save,
+                        seed_focused,
+                        seed_input,
+                        fav_focused,
+                        fav_sel,
+                    )
+                })?;
             }
             Screen::Store {
                 selected_item,
@@ -298,15 +336,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let fb = *feedback;
                 terminal.draw(|f| ui::draw_store(f, sel, &save, fb))?;
             }
-            Screen::Running { state, .. } => {
+            Screen::Running { state, seed, .. } => {
                 let s = state.lock().unwrap();
-                terminal.draw(|f| ui::draw_simulation(f, &s))?;
+                let is_fav = save.is_favorite(*seed);
+                terminal.draw(|f| ui::draw_simulation(f, &s, is_fav))?;
             }
             Screen::VictoryDialog {
                 state,
                 elapsed_secs,
                 energy_earned,
                 crystals_earned,
+                seed,
+                ..
             } => {
                 let s = state.lock().unwrap();
                 let secs = *elapsed_secs;
@@ -314,21 +355,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let ce = *crystals_earned;
                 let te = save.total_energy;
                 let tc = save.total_crystals;
+                let is_fav = save.is_favorite(*seed);
                 terminal.draw(|f| {
-                    ui::draw_simulation(f, &s);
-                    ui::draw_victory_dialog(f, secs, ee, ce, te, tc);
+                    ui::draw_simulation(f, &s, is_fav);
+                    ui::draw_victory_dialog(f, secs, ee, ce, te, tc, is_fav);
                 })?;
             }
         }
 
         // ── Victory detection ─────────────────────────────────
         if let Screen::Running {
-            state, start_time, ..
+            state,
+            start_time,
+            level,
+            seed,
+            ..
         } = &screen
         {
             if state.lock().unwrap().resources.is_empty() {
                 let elapsed_secs = start_time.elapsed().as_secs();
-                let old = std::mem::replace(&mut screen, Screen::MainMenu { selected: 0 });
+                let lvl = *level;
+                let sd = *seed;
+                let old = std::mem::replace(&mut screen, main_menu_screen());
                 if let Screen::Running { state, handle, .. } = old {
                     let (energy_earned, crystals_earned) = {
                         let s = state.lock().unwrap();
@@ -343,6 +391,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         elapsed_secs,
                         energy_earned,
                         crystals_earned,
+                        level: lvl,
+                        seed: sd,
                     };
                 }
                 continue;
@@ -381,28 +431,103 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     OpenStore,
                     CloseStore,
                     StartLevel(usize),
+                    StartSeed(usize, u32),
+                    StartFavorite(usize),
+                    RemoveFavorite(usize),
+                    ToggleFavorite(usize, u32),
                     StoreBuy(usize),
                     QuitRunning,
                     VictoryReturn,
                 }
 
                 let action = match &mut screen {
-                    Screen::MainMenu { selected } => match key.code {
+                    Screen::MainMenu {
+                        selected,
+                        focus,
+                        fav_selected,
+                        seed_input,
+                    } if *focus == MainMenuFocus::SeedInput => match key.code {
+                        KeyCode::Esc | KeyCode::Up => {
+                            *focus = MainMenuFocus::Levels;
+                            Action::None
+                        }
+                        KeyCode::Down => {
+                            *focus = MainMenuFocus::Favorites;
+                            *fav_selected = 0;
+                            Action::None
+                        }
+                        KeyCode::Backspace | KeyCode::Delete => {
+                            seed_input.pop();
+                            Action::None
+                        }
+                        KeyCode::Char(c) if c.is_ascii_digit() => {
+                            if seed_input.len() < 10 {
+                                seed_input.push(c);
+                            }
+                            Action::None
+                        }
+                        KeyCode::Enter => match seed_input.parse::<u32>() {
+                            Ok(seed) => Action::StartSeed(*selected, seed),
+                            Err(_) => Action::None,
+                        },
+                        _ => Action::None,
+                    },
+                    Screen::MainMenu {
+                        selected,
+                        focus,
+                        fav_selected,
+                        ..
+                    } => match key.code {
                         KeyCode::Esc => Action::Quit,
+                        KeyCode::Char('s') | KeyCode::Char('S') => Action::OpenStore,
                         KeyCode::Left => {
-                            if *selected > 0 {
+                            if *focus == MainMenuFocus::Levels && *selected > 0 {
                                 *selected -= 1;
                             }
                             Action::None
                         }
                         KeyCode::Right => {
-                            if *selected < LEVELS.len() - 1 {
+                            if *focus == MainMenuFocus::Levels && *selected < LEVELS.len() - 1 {
                                 *selected += 1;
                             }
                             Action::None
                         }
-                        KeyCode::Char('s') | KeyCode::Char('S') => Action::OpenStore,
-                        KeyCode::Enter => Action::StartLevel(*selected),
+                        KeyCode::Down => {
+                            match *focus {
+                                MainMenuFocus::Levels => {
+                                    *focus = MainMenuFocus::SeedInput;
+                                }
+                                MainMenuFocus::Favorites => {
+                                    if *fav_selected + 1 < save.favorite_maps.len() {
+                                        *fav_selected += 1;
+                                    }
+                                }
+                                MainMenuFocus::SeedInput => unreachable!(),
+                            }
+                            Action::None
+                        }
+                        KeyCode::Up => {
+                            if *focus == MainMenuFocus::Favorites {
+                                if *fav_selected == 0 {
+                                    *focus = MainMenuFocus::SeedInput;
+                                } else {
+                                    *fav_selected -= 1;
+                                }
+                            }
+                            Action::None
+                        }
+                        KeyCode::Enter => match *focus {
+                            MainMenuFocus::Levels => Action::StartLevel(*selected),
+                            MainMenuFocus::Favorites => Action::StartFavorite(*fav_selected),
+                            MainMenuFocus::SeedInput => unreachable!(),
+                        },
+                        KeyCode::Delete | KeyCode::Backspace => {
+                            if *focus == MainMenuFocus::Favorites {
+                                Action::RemoveFavorite(*fav_selected)
+                            } else {
+                                Action::None
+                            }
+                        }
                         _ => Action::None,
                     },
                     Screen::Store {
@@ -427,8 +552,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         KeyCode::Enter => Action::StoreBuy(*selected_item),
                         _ => Action::None,
                     },
-                    Screen::Running { state, .. } => match key.code {
+                    Screen::Running {
+                        state, level, seed, ..
+                    } => match key.code {
                         KeyCode::Esc => Action::QuitRunning,
+                        KeyCode::Char('f') | KeyCode::Char('F') => {
+                            Action::ToggleFavorite(*level, *seed)
+                        }
                         _ => {
                             if let Some(direction) = direction_from_key(key.code) {
                                 let mut s = state.lock().unwrap();
@@ -441,8 +571,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             Action::None
                         }
                     },
-                    Screen::VictoryDialog { .. } => match key.code {
+                    Screen::VictoryDialog { level, seed, .. } => match key.code {
                         KeyCode::Enter | KeyCode::Esc => Action::VictoryReturn,
+                        KeyCode::Char('f') | KeyCode::Char('F') => {
+                            Action::ToggleFavorite(*level, *seed)
+                        }
                         _ => Action::None,
                     },
                 };
@@ -456,11 +589,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         };
                     }
                     Action::CloseStore => {
-                        screen = Screen::MainMenu { selected: 0 };
+                        screen = main_menu_screen();
                     }
                     Action::StartLevel(level) => {
                         let cfg = build_config(level, &save);
-                        let (state, handle) = start_simulation(&cfg);
+                        let seed: u32 = rand::random();
+                        let (state, handle) = start_simulation(&cfg, seed);
                         screen = Screen::Running {
                             state,
                             handle,
@@ -468,7 +602,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             rally_until: None,
                             rally_shift_held: false,
                             level,
+                            seed,
                         };
+                    }
+                    Action::StartSeed(level, seed) => {
+                        let cfg = build_config(level, &save);
+                        let (state, handle) = start_simulation(&cfg, seed);
+                        screen = Screen::Running {
+                            state,
+                            handle,
+                            start_time: Instant::now(),
+                            rally_until: None,
+                            rally_shift_held: false,
+                            level,
+                            seed,
+                        };
+                    }
+                    Action::StartFavorite(idx) => {
+                        if let Some(fav) = save.favorite_maps.get(idx).copied() {
+                            let cfg = build_config(fav.level, &save);
+                            let (state, handle) = start_simulation(&cfg, fav.seed);
+                            screen = Screen::Running {
+                                state,
+                                handle,
+                                start_time: Instant::now(),
+                                rally_until: None,
+                                rally_shift_held: false,
+                                level: fav.level,
+                                seed: fav.seed,
+                            };
+                        }
+                    }
+                    Action::RemoveFavorite(idx) => {
+                        if idx < save.favorite_maps.len() {
+                            save.favorite_maps.remove(idx);
+                            save::persist(&save);
+                        }
+                        if let Screen::MainMenu { fav_selected, .. } = &mut screen {
+                            if *fav_selected > 0 && *fav_selected >= save.favorite_maps.len() {
+                                *fav_selected -= 1;
+                            }
+                        }
+                    }
+                    Action::ToggleFavorite(level, seed) => {
+                        save.toggle_favorite(level, seed);
+                        save::persist(&save);
                     }
                     Action::StoreBuy(idx) => {
                         let msg = match store::apply_upgrade(idx, &mut save) {
@@ -488,7 +666,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     Action::QuitRunning => {
-                        let old = std::mem::replace(&mut screen, Screen::MainMenu { selected: 0 });
+                        let old = std::mem::replace(&mut screen, main_menu_screen());
                         if let Screen::Running { state, handle, .. } = old {
                             let s = state.lock().unwrap();
                             save.total_energy += s.available_energy;
@@ -499,7 +677,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     Action::VictoryReturn => {
-                        screen = Screen::MainMenu { selected: 0 };
+                        screen = main_menu_screen();
                     }
                     Action::None => {}
                 }

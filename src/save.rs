@@ -3,6 +3,14 @@ use serde::{Deserialize, Serialize};
 const SAVE_FILE: &str = "save.json";
 const UPGRADE_SLOT_COUNT: usize = 6;
 
+/// Une carte favorite, identifiee par la seed utilisee pour la generer
+/// (le niveau permet de reconstruire la config de jeu lors du relancement).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
+pub struct FavoriteMap {
+    pub seed: u32,
+    pub level: usize,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SaveData {
     pub total_energy: u32,
@@ -20,6 +28,9 @@ pub struct SaveData {
     /// Nombre d'achats par item du store (pour l'escalade des prix)
     #[serde(default = "default_upgrade_counts")]
     pub upgrade_counts: Vec<u32>,
+    /// Cartes mises en favori (rejouables tant qu'elles restent dans la liste)
+    #[serde(default)]
+    pub favorite_maps: Vec<FavoriteMap>,
 }
 
 impl Default for SaveData {
@@ -34,6 +45,7 @@ impl Default for SaveData {
             crystal_bonus: 0,
             wall_break_power: default_wall_break_power(),
             upgrade_counts: default_upgrade_counts(),
+            favorite_maps: Vec::new(),
         }
     }
 }
@@ -43,6 +55,21 @@ impl SaveData {
         self.wall_break_power = self.wall_break_power.clamp(1, 3);
         if self.upgrade_counts.len() < UPGRADE_SLOT_COUNT {
             self.upgrade_counts.resize(UPGRADE_SLOT_COUNT, 0);
+        }
+    }
+
+    pub fn is_favorite(&self, seed: u32) -> bool {
+        self.favorite_maps.iter().any(|f| f.seed == seed)
+    }
+
+    /// Ajoute ou retire la carte des favoris. Renvoie true si elle vient d'etre ajoutee.
+    pub fn toggle_favorite(&mut self, level: usize, seed: u32) -> bool {
+        if let Some(pos) = self.favorite_maps.iter().position(|f| f.seed == seed) {
+            self.favorite_maps.remove(pos);
+            false
+        } else {
+            self.favorite_maps.push(FavoriteMap { seed, level });
+            true
         }
     }
 }

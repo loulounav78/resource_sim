@@ -1,10 +1,22 @@
 use noise::{NoiseFn, Perlin};
-use rand::Rng;
+use rand::{rngs::StdRng, Rng, SeedableRng};
 use std::collections::HashMap;
 
 use crate::types::{Pos, Resource, ResourceKind};
 
 pub const WALL_MAX_DURABILITY: u8 = 3;
+
+/// Disperse une seed (SplitMix64) avant de l'utiliser : la table de
+/// permutation de `noise::Perlin` melange mal les petites valeurs brutes
+/// (1, 2, 3...), ce qui produisait des terrains quasi identiques entre
+/// seeds voisines. Ce mixage garantit un terrain bien distinct meme pour
+/// une seed saisie a la main sur un seul chiffre.
+fn mix_seed(seed: u32) -> u64 {
+    let mut z = (seed as u64).wrapping_add(0x9E3779B97F4A7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+    z ^ (z >> 31)
+}
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Tile {
@@ -33,7 +45,8 @@ impl Map {
         energy_range: (u32, u32),
         crystal_range: (u32, u32),
     ) -> (Self, HashMap<Pos, Resource>) {
-        let perlin = Perlin::new(seed);
+        let mixed = mix_seed(seed);
+        let perlin = Perlin::new(mixed as u32);
         let mut tiles = vec![vec![Tile::Empty; width]; height];
 
         for y in 0..height {
@@ -59,7 +72,9 @@ impl Map {
             }
         }
 
-        let mut rng = rand::thread_rng();
+        // RNG des ressources derivee de la seed pour qu'une carte favorite
+        // (terrain + ressources) soit reproductible a l'identique.
+        let mut rng = StdRng::seed_from_u64(mixed ^ 0xA5A5_A5A5_A5A5_A5A5);
         let mut resources: HashMap<Pos, Resource> = HashMap::new();
         let target = (width * height) / 35;
         let mut attempts = 0;

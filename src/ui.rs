@@ -19,7 +19,15 @@ use crate::types::ResourceKind;
 //  Menu principal
 // ──────────────────────────────────────────────────────────────
 
-pub fn draw_main_menu(f: &mut Frame, selected: usize, save: &SaveData) {
+pub fn draw_main_menu(
+    f: &mut Frame,
+    selected: usize,
+    save: &SaveData,
+    seed_input_focused: bool,
+    seed_input: &str,
+    favorites_focused: bool,
+    fav_selected: usize,
+) {
     let area = f.area();
 
     let outer = Block::default()
@@ -33,15 +41,20 @@ pub fn draw_main_menu(f: &mut Frame, selected: usize, save: &SaveData) {
         vertical: 1,
     });
 
+    let fav_visible_lines = save.favorite_maps.len().min(6).max(1) as u16;
+    let fav_block_height = fav_visible_lines + 2; // bordures
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // barre ressources
-            Constraint::Length(2),  // label "Selectionnez"
-            Constraint::Length(10), // cartes de niveau
-            Constraint::Length(5),  // bouton STORE
-            Constraint::Min(1),     // espace flexible
-            Constraint::Length(1),  // footer
+            Constraint::Length(3),            // barre ressources
+            Constraint::Length(2),            // label "Selectionnez"
+            Constraint::Length(10),           // cartes de niveau
+            Constraint::Length(5),            // bouton STORE
+            Constraint::Length(3),            // saisie d'une seed
+            Constraint::Length(fav_block_height), // liste de cartes favorites
+            Constraint::Min(1),               // espace flexible
+            Constraint::Length(1),            // footer
         ])
         .split(inner);
 
@@ -196,18 +209,119 @@ pub fn draw_main_menu(f: &mut Frame, selected: usize, save: &SaveData) {
         store_inner,
     );
 
+    // Saisie d'une seed a lancer directement
+    let seed_border_style = if seed_input_focused {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let seed_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(seed_border_style)
+        .title(" Lancer une seed ")
+        .title_alignment(Alignment::Center);
+    let seed_inner = seed_block.inner(chunks[4]);
+    f.render_widget(seed_block, chunks[4]);
+
+    let cursor = if seed_input_focused { "_" } else { "" };
+    let seed_display = if seed_input.is_empty() {
+        format!("  Seed : {}", cursor)
+    } else {
+        format!("  Seed : {}{}", seed_input, cursor)
+    };
+    let mut seed_spans = vec![Span::styled(
+        seed_display,
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    )];
+    if seed_input.parse::<u32>().is_ok() {
+        seed_spans.push(Span::styled(
+            "   [Enter] Lancer",
+            Style::default().fg(Color::Green),
+        ));
+    } else if !seed_input_focused {
+        seed_spans.push(Span::styled(
+            "   (selectionnez puis tapez des chiffres)",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    f.render_widget(Paragraph::new(Line::from(seed_spans)), seed_inner);
+
+    // Liste des cartes favorites
+    let fav_border_style = if favorites_focused {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let fav_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(fav_border_style)
+        .title(" Cartes favorites ")
+        .title_alignment(Alignment::Center);
+    let fav_inner = fav_block.inner(chunks[5]);
+    f.render_widget(fav_block, chunks[5]);
+
+    if save.favorite_maps.is_empty() {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "  Aucune carte favorite. Appuyez sur  F  en jeu pour en ajouter une.",
+                Style::default().fg(Color::DarkGray),
+            ))),
+            fav_inner,
+        );
+    } else {
+        let mut fav_lines: Vec<Line> = Vec::new();
+        for (i, fav) in save.favorite_maps.iter().take(6).enumerate() {
+            let is_sel = favorites_focused && i == fav_selected;
+            let lvl_name = LEVELS
+                .get(fav.level)
+                .map(|l| l.subtitle)
+                .unwrap_or("?");
+            let prefix = if is_sel { "> " } else { "  " };
+            let style = if is_sel {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            fav_lines.push(Line::from(Span::styled(
+                format!(
+                    "{}Niv.{} ({})  —  Seed {}",
+                    prefix,
+                    fav.level + 1,
+                    lvl_name,
+                    fav.seed
+                ),
+                style,
+            )));
+        }
+        if save.favorite_maps.len() > 6 {
+            fav_lines.push(Line::from(Span::styled(
+                format!("  ... et {} de plus", save.favorite_maps.len() - 6),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        f.render_widget(Paragraph::new(fav_lines), fav_inner);
+    }
+
     // Footer
     let footer = Line::from(vec![
-        Span::styled(" <- -> ", Style::default().fg(Color::Yellow)),
-        Span::raw("Choisir niveau   "),
+        Span::styled(" <-/-> ", Style::default().fg(Color::Yellow)),
+        Span::raw("Niveau   "),
+        Span::styled(" ^/v ", Style::default().fg(Color::Yellow)),
+        Span::raw("Favoris   "),
         Span::styled(" Enter ", Style::default().fg(Color::Yellow)),
         Span::raw("Jouer   "),
+        Span::styled(" Suppr ", Style::default().fg(Color::Yellow)),
+        Span::raw("Retirer favori   "),
         Span::styled(" S ", Style::default().fg(Color::Cyan)),
         Span::raw("Store   "),
         Span::styled(" Esc ", Style::default().fg(Color::Yellow)),
         Span::raw("Quitter"),
     ]);
-    f.render_widget(Paragraph::new(footer), chunks[5]);
+    f.render_widget(Paragraph::new(footer), chunks[7]);
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -427,7 +541,7 @@ pub fn draw_store(
 //  Simulation screen
 // ──────────────────────────────────────────────────────────────
 
-pub fn draw_simulation(f: &mut Frame, state: &SimState) {
+pub fn draw_simulation(f: &mut Frame, state: &SimState, is_favorite: bool) {
     let area = f.area();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -435,7 +549,7 @@ pub fn draw_simulation(f: &mut Frame, state: &SimState) {
         .split(area);
 
     draw_map(f, state, chunks[0]);
-    draw_stats(f, state, chunks[1]);
+    draw_stats(f, state, chunks[1], is_favorite);
 }
 
 fn draw_map(f: &mut Frame, state: &SimState, area: Rect) {
@@ -514,10 +628,11 @@ pub fn draw_victory_dialog(
     crystals_earned: u32,
     total_energy: u32,
     total_crystals: u32,
+    is_favorite: bool,
 ) {
     let area = f.area();
 
-    let popup_w = 66u16;
+    let popup_w = 76u16;
     let popup_h = 18u16;
     let x = (area.width.saturating_sub(popup_w)) / 2;
     let y = (area.height.saturating_sub(popup_h)) / 2;
@@ -614,7 +729,21 @@ pub fn draw_victory_dialog(
         Line::raw(""),
         Line::from(vec![
             Span::styled("  Enter / Esc ", Style::default().fg(Color::Yellow)),
-            Span::raw("Retour au menu"),
+            Span::raw("Retour au menu   "),
+            Span::styled("F ", Style::default().fg(Color::Yellow)),
+            Span::raw(if is_favorite {
+                "Retirer des favoris "
+            } else {
+                "Ajouter aux favoris "
+            }),
+            Span::styled(
+                if is_favorite { "[*]" } else { "[ ]" },
+                Style::default().fg(if is_favorite {
+                    Color::Yellow
+                } else {
+                    Color::DarkGray
+                }),
+            ),
         ]),
     ];
 
@@ -625,7 +754,7 @@ pub fn draw_victory_dialog(
 //  Stats bar
 // ──────────────────────────────────────────────────────────────
 
-fn draw_stats(f: &mut Frame, state: &SimState, area: Rect) {
+fn draw_stats(f: &mut Frame, state: &SimState, area: Rect, is_favorite: bool) {
     let carrying = state.robots.iter().filter(|r| r.carrying).count();
     let known = state.knowledge.resources.len();
     let remaining = state.resources.len();
@@ -699,6 +828,21 @@ fn draw_stats(f: &mut Frame, state: &SimState, area: Rect) {
             format!("[{}]", rally_status),
             Style::default().fg(if state.scout_rally_pos.is_some() {
                 Color::Green
+            } else {
+                Color::DarkGray
+            }),
+        ),
+        Span::raw("   "),
+        Span::styled("F ", Style::default().fg(Color::Yellow)),
+        Span::raw(if is_favorite {
+            "Retirer des favoris "
+        } else {
+            "Ajouter aux favoris "
+        }),
+        Span::styled(
+            if is_favorite { "[*]" } else { "[ ]" },
+            Style::default().fg(if is_favorite {
+                Color::Yellow
             } else {
                 Color::DarkGray
             }),
