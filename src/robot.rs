@@ -253,7 +253,10 @@ pub fn run_collector(
                 // else: stay at the tile, collect more next tick
             } else {
                 //── SEEK A RESOURCE ─────────────────────────────────────
-                if s.resources.contains_key(&pos) && !s.map.is_base(pos.0, pos.1) {
+                if s.resources.contains_key(&pos)
+                    && !s.map.is_base(pos.0, pos.1)
+                    && (my_claimed == Some(pos) || !s.reserved.contains(&pos))
+                {
                     // Start collecting here
                     carry_source = pos;
                     carry_kind = s.resources[&pos].kind.clone();
