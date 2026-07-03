@@ -1,0 +1,28 @@
+{
+  "total_energy": 175687,
+  "total_crystals": 17998,
+  "num_scouts": 10,
+  "num_collectors": 10,
+  "carry_capacity": 50,
+  "energy_bonus": 470,
+  "crystal_bonus": 50,
+  "wall_break_power": 3,
+  "upgrade_counts": [
+    32,
+    0,
+    6,
+    47,
+    0,
+    2
+  ],
+  "favorite_maps": [
+    {
+      "seed": 2163818277,
+      "level": 0
+    },
+    {
+      "seed": 1073959111,
+      "level": 1
+    }
+  ]
+}
